@@ -1,0 +1,185 @@
+// What this file does:
+// Defines the canonical relational data model for participants, protocol versions, visits, safety events, and audit logs.
+// What calls it:
+// Prisma Client generation and future database migrations; this learning build mirrors the same shape in mock repositories.
+// What it calls:
+// PostgreSQL via Prisma in a production deployment.
+// One thing a junior engineer would likely get wrong when writing something similar:
+// Modeling protocol rules directly on participants instead of versioning them separately and pinning participants to a version.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  STUDY_COORDINATOR
+  PRINCIPAL_INVESTIGATOR
+  DATA_MANAGER
+  MEDICAL_MONITOR
+  UNBLINDED_PHARMACIST
+}
+
+enum ParticipantStatus {
+  SCREENING
+  ENROLLED
+  SCREEN_FAILED
+  COMPLETED
+  WITHDRAWN
+}
+
+enum ProtocolVersionStatus {
+  DRAFT
+  ACTIVE
+  RETIRED
+}
+
+enum VisitStatus {
+  SCHEDULED
+  COMPLETED
+  MISSED
+  CANCELLED
+}
+
+enum AdverseEventSeverity {
+  MILD
+  MODERATE
+  SEVERE
+  LIFE_THREATENING
+}
+
+enum DeviationSeverity {
+  MINOR
+  MAJOR
+  CRITICAL
+}
+
+model User {
+  id        String   @id
+  email     String   @unique
+  name      String
+  role      Role
+  siteIds   String[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  auditLogs AuditLog[] @relation("AuditActor")
+}
+
+model ProtocolVersion {
+  id             String                @id
+  protocolCode   String
+  versionNumber  Int
+  status         ProtocolVersionStatus
+  effectiveDate  DateTime
+  summary        String
+  visitTemplates Json
+  createdById    String
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  participants Participant[]
+
+  /// ⚠️ SENIOR NOTE: Protocol versions must stay append-only once activated.
+  /// Editing active rows in place breaks the audit trail for participants already enrolled.
+  @@unique([protocolCode, versionNumber])
+}
+
+model Participant {
+  id                       String            @id
+  screeningNumber          String            @unique
+  studySubjectId           String?           @unique
+  siteId                   String
+  status                   ParticipantStatus
+  initials                 String
+  dateOfBirth              DateTime
+  screenedAt               DateTime
+  enrolledAt               DateTime?
+  completedAt              DateTime?
+  pinnedProtocolVersionId  String?
+  blindedRandomizationCode String?
+  actualTreatmentArm       String?
+  createdById              String
+  createdAt                DateTime          @default(now())
+  updatedAt                DateTime          @updatedAt
+
+  pinnedProtocolVersion ProtocolVersion? @relation(fields: [pinnedProtocolVersionId], references: [id])
+  visits                StudyVisit[]
+  adverseEvents         AdverseEvent[]
+  deviations            ProtocolDeviation[]
+  auditLogs             AuditLog[]        @relation("AuditParticipant")
+
+  @@index([siteId, status])
+}
+
+model StudyVisit {
+  id            String      @id
+  participantId String
+  protocolCode  String
+  visitCode     String
+  label         String
+  dayOffset     Int
+  windowStart   DateTime
+  targetDate    DateTime
+  windowEnd     DateTime
+  status        VisitStatus
+  completedAt   DateTime?
+  completedById String?
+  notes         String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  participant Participant @relation(fields: [participantId], references: [id])
+
+  @@unique([participantId, visitCode])
+  @@index([participantId, targetDate])
+}
+
+model AdverseEvent {
+  id             String               @id
+  participantId  String
+  reportedAt     DateTime
+  severity       AdverseEventSeverity
+  description    String
+  outcome        String
+  isSerious      Boolean
+  requiresUnblinding Boolean          @default(false)
+  createdById    String
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  participant Participant @relation(fields: [participantId], references: [id])
+}
+
+model ProtocolDeviation {
+  id             String            @id
+  participantId  String
+  category       String
+  severity       DeviationSeverity
+  description    String
+  occurredAt     DateTime
+  createdById    String
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  participant Participant @relation(fields: [participantId], references: [id])
+}
+
+model AuditLog {
+  id             String   @id
+  entityType     String
+  entityId       String
+  action         String
+  actorUserId    String
+  participantId  String?
+  metadataJson   Json
+  occurredAt     DateTime @default(now())
+
+  actor       User         @relation("AuditActor", fields: [actorUserId], references: [id])
+  participant Participant? @relation("AuditParticipant", fields: [participantId], references: [id])
+
+  @@index([entityType, entityId, occurredAt])
+}
